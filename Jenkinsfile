@@ -179,7 +179,7 @@ EOF
             }
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
-                    sh '''
+                    sh '''#!/bin/bash
                         echo "📝 GitOps Repo 업데이트..."
                         
                         # GitOps Repo 클론
@@ -192,37 +192,37 @@ EOF
                         echo "================================="
                         
                         # 변경된 서비스만 태그 업데이트
-                        if [ "${BUILD_CONFIG_SERVER}" == "true" ]; then
+                        if [ "${BUILD_CONFIG_SERVER}" = "true" ]; then
                             echo "🔄 Updating config-server tag to ${IMAGE_TAG}"
                             sed -i '/petclinic-config-server/,/newTag:/s/newTag: .*/newTag: "'${IMAGE_TAG}'"/' kustomization.yaml
                         fi
                         
-                        if [ "${BUILD_DISCOVERY_SERVER}" == "true" ]; then
+                        if [ "${BUILD_DISCOVERY_SERVER}" = "true" ]; then
                             echo "🔄 Updating discovery-server tag to ${IMAGE_TAG}"
                             sed -i '/petclinic-discovery-server/,/newTag:/s/newTag: .*/newTag: "'${IMAGE_TAG}'"/' kustomization.yaml
                         fi
                         
-                        if [ "${BUILD_CUSTOMERS_SERVICE}" == "true" ]; then
+                        if [ "${BUILD_CUSTOMERS_SERVICE}" = "true" ]; then
                             echo "🔄 Updating customers-service tag to ${IMAGE_TAG}"
                             sed -i '/petclinic-customers-service/,/newTag:/s/newTag: .*/newTag: "'${IMAGE_TAG}'"/' kustomization.yaml
                         fi
                         
-                        if [ "${BUILD_VETS_SERVICE}" == "true" ]; then
+                        if [ "${BUILD_VETS_SERVICE}" = "true" ]; then
                             echo "🔄 Updating vets-service tag to ${IMAGE_TAG}"
                             sed -i '/petclinic-vets-service/,/newTag:/s/newTag: .*/newTag: "'${IMAGE_TAG}'"/' kustomization.yaml
                         fi
                         
-                        if [ "${BUILD_VISITS_SERVICE}" == "true" ]; then
+                        if [ "${BUILD_VISITS_SERVICE}" = "true" ]; then
                             echo "🔄 Updating visits-service tag to ${IMAGE_TAG}"
                             sed -i '/petclinic-visits-service/,/newTag:/s/newTag: .*/newTag: "'${IMAGE_TAG}'"/' kustomization.yaml
                         fi
                         
-                        if [ "${BUILD_API_GATEWAY}" == "true" ]; then
+                        if [ "${BUILD_API_GATEWAY}" = "true" ]; then
                             echo "🔄 Updating api-gateway tag to ${IMAGE_TAG}"
                             sed -i '/petclinic-api-gateway/,/newTag:/s/newTag: .*/newTag: "'${IMAGE_TAG}'"/' kustomization.yaml
                         fi
                         
-                        if [ "${BUILD_ADMIN_SERVER}" == "true" ]; then
+                        if [ "${BUILD_ADMIN_SERVER}" = "true" ]; then
                             echo "🔄 Updating admin-server tag to ${IMAGE_TAG}"
                             sed -i '/petclinic-admin-server/,/newTag:/s/newTag: .*/newTag: "'${IMAGE_TAG}'"/' kustomization.yaml
                         fi
