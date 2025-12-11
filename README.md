@@ -39,12 +39,12 @@ Spring PetClinic Microservices 소스 코드 및 CI/CD 파이프라인
 ## 📁 디렉토리 구조
 
 ```
-├── spring-petclinic-*/     # 각 마이크로서비스 소스
-├── docker/                 # Dockerfile들
-├── scripts/                # 빌드/배포 스크립트
-├── Jenkinsfile             # CI/CD 파이프라인
-├── docker-compose.yml      # 로컬 개발용
-└── pom.xml                 # Maven 루트 설정
+├── .github/workflows/ci.yml  # GitHub Actions 파이프라인
+├── spring-petclinic-*/       # 각 마이크로서비스 소스
+├── docker/                   # Dockerfile들
+├── scripts/                  # 빌드/배포 스크립트
+├── docker-compose.yml        # 로컬 개발용
+└── pom.xml                   # Maven 루트 설정
 ```
 
 ## 🚀 로컬 실행
@@ -60,15 +60,29 @@ docker-compose up -d
 ./mvnw spring-boot:run -pl spring-petclinic-config-server
 ```
 
-## ⚙️ CI/CD (Jenkins)
+## ⚙️ CI/CD (GitHub Actions)
 
-Jenkinsfile이 포함되어 있으며 다음 단계를 수행:
+`.github/workflows/ci.yml`이 포함되어 있으며 다음 단계를 수행:
 
-1. 🔍 변경된 서비스 감지
-2. 🔨 Maven 빌드 & 테스트
-3. 🐳 Docker 이미지 빌드
-4. ☁️ ECR Push
-5. 📝 GitOps 저장소 업데이트 (petclinic-gitops)
+```
+Push → 변경 감지 → Maven 빌드 → Docker Build → ECR Push → GitOps 업데이트
+                                                                    ↓
+                                                          ArgoCD 자동 배포
+```
+
+### 파이프라인 흐름
+
+1. **변경 감지** - 수정된 서비스만 빌드
+2. **Maven 빌드** - Java 17, 테스트 스킵
+3. **Docker Build & ECR Push** - 레이어드 이미지
+4. **GitOps 업데이트** - kustomization.yaml 태그 수정
+
+### GitHub Secrets 설정
+
+| Secret | 용도 |
+|--------|------|
+| `AWS_ROLE_ARN` | OIDC 인증용 IAM Role |
+| `GITOPS_TOKEN` | petclinic-gitops 레포 접근용 PAT |
 
 ## 🛠️ 기술 스택
 
@@ -79,4 +93,6 @@ Jenkinsfile이 포함되어 있으며 다음 단계를 수행:
 | Build | Maven |
 | Container | Docker |
 | Database | MySQL (RDS) |
-| CI/CD | Jenkins |
+| CI/CD | GitHub Actions |
+| GitOps | ArgoCD |
+| AWS 인증 | OIDC (키 없음) |
