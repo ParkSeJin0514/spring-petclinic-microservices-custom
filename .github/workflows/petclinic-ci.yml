@@ -1,0 +1,301 @@
+name: Petclinic CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REGISTRY: 946775837287.dkr.ecr.ap-northeast-2.amazonaws.com
+  ECR_REPO_PREFIX: petclinic-msa
+
+permissions:
+  id-token: write   # OIDC 토큰 발급
+  contents: read    # 레포 체크아웃
+
+jobs:
+  # ============================================
+  # 변경 감지
+  # ============================================
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      config-server: ${{ steps.changes.outputs.config-server }}
+      discovery-server: ${{ steps.changes.outputs.discovery-server }}
+      customers-service: ${{ steps.changes.outputs.customers-service }}
+      vets-service: ${{ steps.changes.outputs.vets-service }}
+      visits-service: ${{ steps.changes.outputs.visits-service }}
+      api-gateway: ${{ steps.changes.outputs.api-gateway }}
+      admin-server: ${{ steps.changes.outputs.admin-server }}
+      any-service: ${{ steps.changes.outputs.any-service }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect Changes
+        id: changes
+        run: |
+          # 변경된 파일 목록
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "ALL")
+          echo "Changed files: $CHANGED"
+          
+          # 전체 빌드 조건 (pom.xml, workflow 변경)
+          if echo "$CHANGED" | grep -qE "^pom.xml|^\.github/workflows/"; then
+            echo "🔄 전체 빌드 트리거"
+            BUILD_ALL=true
+          else
+            BUILD_ALL=false
+          fi
+          
+          # 각 서비스 변경 감지
+          check_service() {
+            local service=$1
+            if [ "$BUILD_ALL" = "true" ] || echo "$CHANGED" | grep -q "spring-petclinic-$service"; then
+              echo "true"
+            else
+              echo "false"
+            fi
+          }
+          
+          echo "config-server=$(check_service config-server)" >> $GITHUB_OUTPUT
+          echo "discovery-server=$(check_service discovery-server)" >> $GITHUB_OUTPUT
+          echo "customers-service=$(check_service customers-service)" >> $GITHUB_OUTPUT
+          echo "vets-service=$(check_service vets-service)" >> $GITHUB_OUTPUT
+          echo "visits-service=$(check_service visits-service)" >> $GITHUB_OUTPUT
+          echo "api-gateway=$(check_service api-gateway)" >> $GITHUB_OUTPUT
+          echo "admin-server=$(check_service admin-server)" >> $GITHUB_OUTPUT
+          
+          # 하나라도 변경되었는지
+          if [ "$BUILD_ALL" = "true" ] || echo "$CHANGED" | grep -q "spring-petclinic-"; then
+            echo "any-service=true" >> $GITHUB_OUTPUT
+          else
+            echo "any-service=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Summary
+        run: |
+          echo "### 🔍 변경 감지 결과" >> $GITHUB_STEP_SUMMARY
+          echo "| 서비스 | 빌드 |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| config-server | ${{ steps.changes.outputs.config-server }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| discovery-server | ${{ steps.changes.outputs.discovery-server }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| customers-service | ${{ steps.changes.outputs.customers-service }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| vets-service | ${{ steps.changes.outputs.vets-service }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| visits-service | ${{ steps.changes.outputs.visits-service }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| api-gateway | ${{ steps.changes.outputs.api-gateway }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| admin-server | ${{ steps.changes.outputs.admin-server }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================
+  # Maven 빌드
+  # ============================================
+  build:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.any-service == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Maven Build
+        run: |
+          chmod +x mvnw
+          ./mvnw clean package -DskipTests -q
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jar-files
+          path: |
+            spring-petclinic-*/target/*.jar
+          retention-days: 1
+
+  # ============================================
+  # Docker 빌드 & ECR Push
+  # ============================================
+  docker-push:
+    needs: [detect-changes, build]
+    if: needs.detect-changes.outputs.any-service == 'true' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.set-tag.outputs.tag }}
+      built-services: ${{ steps.build-images.outputs.built-services }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: jar-files
+          path: .
+
+      - name: Set Image Tag
+        id: set-tag
+        run: |
+          TAG="${{ github.run_number }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "🏷️ Image Tag: $TAG"
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push Images
+        id: build-images
+        env:
+          IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
+          BUILD_CONFIG_SERVER: ${{ needs.detect-changes.outputs.config-server }}
+          BUILD_DISCOVERY_SERVER: ${{ needs.detect-changes.outputs.discovery-server }}
+          BUILD_CUSTOMERS_SERVICE: ${{ needs.detect-changes.outputs.customers-service }}
+          BUILD_VETS_SERVICE: ${{ needs.detect-changes.outputs.vets-service }}
+          BUILD_VISITS_SERVICE: ${{ needs.detect-changes.outputs.visits-service }}
+          BUILD_API_GATEWAY: ${{ needs.detect-changes.outputs.api-gateway }}
+          BUILD_ADMIN_SERVER: ${{ needs.detect-changes.outputs.admin-server }}
+        run: |
+          BUILT_SERVICES=""
+          
+          build_and_push() {
+            local service=$1
+            local port=$2
+            local build_flag=$3
+            
+            if [ "$build_flag" != "true" ]; then
+              echo "⏭️ Skipping $service (변경 없음)"
+              return
+            fi
+            
+            echo "🐳 Building $service..."
+            
+            cd spring-petclinic-$service
+            
+            cat > Dockerfile << 'EOF'
+          FROM eclipse-temurin:17-jdk-alpine AS build
+          WORKDIR /app
+          COPY target/*.jar app.jar
+          RUN java -Djarmode=layertools -jar app.jar extract
+
+          FROM eclipse-temurin:17-jre-alpine
+          WORKDIR /app
+          COPY --from=build /app/dependencies/ ./
+          COPY --from=build /app/spring-boot-loader/ ./
+          COPY --from=build /app/snapshot-dependencies/ ./
+          COPY --from=build /app/application/ ./
+          EXPOSE $port
+          ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]
+          EOF
+            
+            IMAGE="${ECR_REGISTRY}/${ECR_REPO_PREFIX}/petclinic-$service"
+            
+            docker build -t $IMAGE:$IMAGE_TAG -t $IMAGE:latest .
+            docker push $IMAGE:$IMAGE_TAG
+            docker push $IMAGE:latest
+            
+            echo "✅ $service 완료"
+            BUILT_SERVICES="$BUILT_SERVICES $service"
+            
+            cd ..
+          }
+          
+          build_and_push "config-server" "8888" "$BUILD_CONFIG_SERVER"
+          build_and_push "discovery-server" "8761" "$BUILD_DISCOVERY_SERVER"
+          build_and_push "customers-service" "8081" "$BUILD_CUSTOMERS_SERVICE"
+          build_and_push "vets-service" "8083" "$BUILD_VETS_SERVICE"
+          build_and_push "visits-service" "8082" "$BUILD_VISITS_SERVICE"
+          build_and_push "api-gateway" "8080" "$BUILD_API_GATEWAY"
+          build_and_push "admin-server" "9090" "$BUILD_ADMIN_SERVER"
+          
+          echo "built-services=$BUILT_SERVICES" >> $GITHUB_OUTPUT
+
+      - name: Summary
+        run: |
+          echo "### 🐳 Docker Push 결과" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag:** ${{ steps.set-tag.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Built Services:**${{ steps.build-images.outputs.built-services }}" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================
+  # GitOps 레포 업데이트
+  # ============================================
+  update-gitops:
+    needs: [detect-changes, docker-push]
+    if: needs.detect-changes.outputs.any-service == 'true' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout GitOps Repo
+        uses: actions/checkout@v4
+        with:
+          repository: ParkSeJin0514/petclinic-gitops
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+
+      - name: Update Image Tags
+        env:
+          IMAGE_TAG: ${{ needs.docker-push.outputs.image-tag }}
+          BUILD_CONFIG_SERVER: ${{ needs.detect-changes.outputs.config-server }}
+          BUILD_DISCOVERY_SERVER: ${{ needs.detect-changes.outputs.discovery-server }}
+          BUILD_CUSTOMERS_SERVICE: ${{ needs.detect-changes.outputs.customers-service }}
+          BUILD_VETS_SERVICE: ${{ needs.detect-changes.outputs.vets-service }}
+          BUILD_VISITS_SERVICE: ${{ needs.detect-changes.outputs.visits-service }}
+          BUILD_API_GATEWAY: ${{ needs.detect-changes.outputs.api-gateway }}
+          BUILD_ADMIN_SERVER: ${{ needs.detect-changes.outputs.admin-server }}
+        run: |
+          cd gitops
+          
+          echo "=== 변경 전 kustomization.yaml ==="
+          cat kustomization.yaml
+          echo "================================="
+          
+          update_tag() {
+            local service=$1
+            local build_flag=$2
+            
+            if [ "$build_flag" = "true" ]; then
+              echo "🔄 Updating $service tag to $IMAGE_TAG"
+              sed -i "/petclinic-$service/,/newTag:/s/newTag: .*/newTag: \"$IMAGE_TAG\"/" kustomization.yaml
+            fi
+          }
+          
+          update_tag "config-server" "$BUILD_CONFIG_SERVER"
+          update_tag "discovery-server" "$BUILD_DISCOVERY_SERVER"
+          update_tag "customers-service" "$BUILD_CUSTOMERS_SERVICE"
+          update_tag "vets-service" "$BUILD_VETS_SERVICE"
+          update_tag "visits-service" "$BUILD_VISITS_SERVICE"
+          update_tag "api-gateway" "$BUILD_API_GATEWAY"
+          update_tag "admin-server" "$BUILD_ADMIN_SERVER"
+          
+          echo "=== 변경 후 kustomization.yaml ==="
+          cat kustomization.yaml
+          echo "================================="
+
+      - name: Commit & Push
+        run: |
+          cd gitops
+          git config user.email "github-actions@github.com"
+          git config user.name "GitHub Actions"
+          
+          git add .
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "🚀 Update image tag to ${{ needs.docker-push.outputs.image-tag }} (Run #${{ github.run_number }})"
+            git push
+            echo "✅ GitOps 업데이트 완료"
+          fi
+
+      - name: Summary
+        run: |
+          echo "### 📝 GitOps 업데이트" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag:** ${{ needs.docker-push.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **ArgoCD가 자동으로 EKS에 배포합니다**" >> $GITHUB_STEP_SUMMARY
