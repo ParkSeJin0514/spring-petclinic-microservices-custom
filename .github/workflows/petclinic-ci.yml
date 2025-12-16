@@ -7,9 +7,15 @@ on:
     branches: [main]
 
 env:
+  # AWS
   AWS_REGION: ap-northeast-2
   ECR_REGISTRY: 946775837287.dkr.ecr.ap-northeast-2.amazonaws.com
   ECR_REPO_PREFIX: petclinic-msa
+  # GCP
+  GCP_PROJECT_ID: kdt2-final-project-t1
+  GCP_REGION: asia-northeast3
+  GAR_REGISTRY: asia-northeast3-docker.pkg.dev
+  GAR_REPO: petclinic-msa
 
 permissions:
   id-token: write   # OIDC 토큰 발급
@@ -153,6 +159,16 @@ jobs:
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Configure GCP Credentials (OIDC)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Login to Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ env.GAR_REGISTRY }} --quiet
+
       - name: Build & Push Images
         id: build-images
         env:
@@ -164,6 +180,9 @@ jobs:
           BUILD_VISITS_SERVICE: ${{ needs.detect-changes.outputs.visits-service }}
           BUILD_API_GATEWAY: ${{ needs.detect-changes.outputs.api-gateway }}
           BUILD_ADMIN_SERVER: ${{ needs.detect-changes.outputs.admin-server }}
+          GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
+          GAR_REGISTRY: ${{ env.GAR_REGISTRY }}
+          GAR_REPO: ${{ env.GAR_REPO }}
         run: |
           BUILT_SERVICES=""
           
@@ -197,13 +216,23 @@ jobs:
           ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]
           EOF
             
-            IMAGE="${ECR_REGISTRY}/${ECR_REPO_PREFIX}/petclinic-$service"
-            
-            docker build -t $IMAGE:$IMAGE_TAG -t $IMAGE:latest .
-            docker push $IMAGE:$IMAGE_TAG
-            docker push $IMAGE:latest
-            
-            echo "✅ $service 완료"
+            # AWS ECR
+            ECR_IMAGE="${ECR_REGISTRY}/${ECR_REPO_PREFIX}/petclinic-$service"
+            # GCP Artifact Registry
+            GAR_IMAGE="${GAR_REGISTRY}/${GCP_PROJECT_ID}/${GAR_REPO}/petclinic-$service"
+
+            docker build -t $ECR_IMAGE:$IMAGE_TAG -t $ECR_IMAGE:latest \
+                         -t $GAR_IMAGE:$IMAGE_TAG -t $GAR_IMAGE:latest .
+
+            # Push to AWS ECR
+            docker push $ECR_IMAGE:$IMAGE_TAG
+            docker push $ECR_IMAGE:latest
+
+            # Push to GCP Artifact Registry
+            docker push $GAR_IMAGE:$IMAGE_TAG
+            docker push $GAR_IMAGE:latest
+
+            echo "✅ $service 완료 (ECR + GAR)"
             BUILT_SERVICES="$BUILT_SERVICES $service"
             
             cd ..
@@ -255,35 +284,37 @@ jobs:
           BUILD_ADMIN_SERVER: ${{ needs.detect-changes.outputs.admin-server }}
         run: |
           cd gitops
-          
-          echo "=== 변경 전 kustomization.yaml ==="
-          cat kustomization.yaml
-          echo "================================="
-          
+
           # yq를 사용한 정확한 이미지 태그 업데이트
           update_tag() {
             local service=$1
             local build_flag=$2
-            
+            local kustomization_file=$3
+
             if [ "$build_flag" = "true" ]; then
-              echo "🔄 Updating $service tag to $IMAGE_TAG"
-              yq -i "(.images[] | select(.name == \"springcommunity/spring-petclinic-$service\").newTag) = \"$IMAGE_TAG\"" kustomization.yaml
-            else
-              echo "⏭️ Skipping $service (변경 없음)"
+              echo "🔄 Updating $service tag to $IMAGE_TAG in $kustomization_file"
+              yq -i "(.images[] | select(.name == \"springcommunity/spring-petclinic-$service\").newTag) = \"$IMAGE_TAG\"" "$kustomization_file"
             fi
           }
-          
-          update_tag "config-server" "$BUILD_CONFIG_SERVER"
-          update_tag "discovery-server" "$BUILD_DISCOVERY_SERVER"
-          update_tag "customers-service" "$BUILD_CUSTOMERS_SERVICE"
-          update_tag "vets-service" "$BUILD_VETS_SERVICE"
-          update_tag "visits-service" "$BUILD_VISITS_SERVICE"
-          update_tag "api-gateway" "$BUILD_API_GATEWAY"
-          update_tag "admin-server" "$BUILD_ADMIN_SERVER"
-          
-          echo "=== 변경 후 kustomization.yaml ==="
-          cat kustomization.yaml
-          echo "================================="
+
+          # Update AWS overlay
+          echo "=== Updating AWS overlay ==="
+          for service in config-server discovery-server customers-service vets-service visits-service api-gateway admin-server; do
+            build_var="BUILD_$(echo $service | tr '[:lower:]-' '[:upper:]_')"
+            update_tag "$service" "${!build_var}" "overlays/aws/kustomization.yaml"
+          done
+
+          # Update GCP overlay
+          echo "=== Updating GCP overlay ==="
+          for service in config-server discovery-server customers-service vets-service visits-service api-gateway admin-server; do
+            build_var="BUILD_$(echo $service | tr '[:lower:]-' '[:upper:]_')"
+            update_tag "$service" "${!build_var}" "overlays/gcp/kustomization.yaml"
+          done
+
+          echo "=== AWS overlay kustomization.yaml ==="
+          cat overlays/aws/kustomization.yaml
+          echo "=== GCP overlay kustomization.yaml ==="
+          cat overlays/gcp/kustomization.yaml
 
       - name: Commit & Push
         env:
