@@ -363,6 +363,7 @@ jobs:
           BUILD_VISITS_SERVICE: ${{ needs.detect-changes.outputs.visits-service }}
           BUILD_API_GATEWAY: ${{ needs.detect-changes.outputs.api-gateway }}
           BUILD_ADMIN_SERVER: ${{ needs.detect-changes.outputs.admin-server }}
+          IS_TAGGED_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
         run: |
           cd gitops
 
@@ -378,22 +379,30 @@ jobs:
             fi
           }
 
-          # Update AWS overlay
-          echo "=== Updating AWS overlay ==="
+          # AWS overlay: 항상 업데이트 (모든 커밋)
+          echo "=== Updating AWS overlay (항상) ==="
           for service in config-server discovery-server customers-service vets-service visits-service api-gateway admin-server; do
             build_var="BUILD_$(echo $service | tr '[:lower:]-' '[:upper:]_')"
             update_tag "$service" "${!build_var}" "overlays/aws/kustomization.yaml"
           done
+          echo "✅ AWS overlay 업데이트 완료"
 
-          # Update GCP overlay
-          echo "=== Updating GCP overlay ==="
-          for service in config-server discovery-server customers-service vets-service visits-service api-gateway admin-server; do
-            build_var="BUILD_$(echo $service | tr '[:lower:]-' '[:upper:]_')"
-            update_tag "$service" "${!build_var}" "overlays/gcp/kustomization.yaml"
-          done
+          # GCP overlay: 태그 푸시 시에만 업데이트
+          if [ "$IS_TAGGED_RELEASE" = "true" ]; then
+            echo "=== Updating GCP overlay (릴리스 태그: ${GITHUB_REF#refs/tags/}) ==="
+            for service in config-server discovery-server customers-service vets-service visits-service api-gateway admin-server; do
+              build_var="BUILD_$(echo $service | tr '[:lower:]-' '[:upper:]_')"
+              update_tag "$service" "${!build_var}" "overlays/gcp/kustomization.yaml"
+            done
+            echo "✅ GCP overlay 업데이트 완료"
+          else
+            echo "⏭️ GCP overlay 스킵 (태그 없음, main 브랜치 커밋)"
+          fi
 
+          echo ""
           echo "=== AWS overlay kustomization.yaml ==="
           cat overlays/aws/kustomization.yaml
+          echo ""
           echo "=== GCP overlay kustomization.yaml ==="
           cat overlays/gcp/kustomization.yaml
 
@@ -416,10 +425,18 @@ jobs:
           fi
 
       - name: Summary
+        env:
+          IS_TAGGED_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
         run: |
           echo "### 📝 GitOps 업데이트" >> $GITHUB_STEP_SUMMARY
           echo "- **Image Tag:** ${{ needs.docker-push.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Updated Services:** ${{ needs.docker-push.outputs.built-services }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **AWS overlay:** ✅ 업데이트 완료" >> $GITHUB_STEP_SUMMARY
+          if [ "$IS_TAGGED_RELEASE" = "true" ]; then
+            echo "- **GCP overlay:** ✅ 업데이트 완료 (릴리스 태그)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **GCP overlay:** ⏭️ 스킵 (태그 없음)" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "- **ArgoCD가 자동으로 Kubernetes에 배포합니다**" >> $GITHUB_STEP_SUMMARY
 
   # ============================================
