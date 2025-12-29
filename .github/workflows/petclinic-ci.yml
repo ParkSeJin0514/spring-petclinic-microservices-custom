@@ -51,16 +51,16 @@ jobs:
           # 변경된 파일 목록
           CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "ALL")
           echo "Changed files: $CHANGED"
-          
-          # 전체 빌드 조건 (pom.xml, workflow 변경)
-          if echo "$CHANGED" | grep -qE "^pom.xml|^\.github/workflows/"; then
-            echo "🔄 전체 빌드 트리거"
+
+          # 전체 빌드 조건 (루트 pom.xml만 - 워크플로우 변경은 제외)
+          if echo "$CHANGED" | grep -qE "^pom.xml$"; then
+            echo "🔄 전체 빌드 트리거 (pom.xml 변경)"
             BUILD_ALL=true
           else
             BUILD_ALL=false
           fi
-          
-          # 각 서비스 변경 감지
+
+          # 각 서비스 변경 감지 (서비스별 독립 빌드)
           check_service() {
             local service=$1
             if [ "$BUILD_ALL" = "true" ] || echo "$CHANGED" | grep -q "spring-petclinic-$service"; then
@@ -69,7 +69,7 @@ jobs:
               echo "false"
             fi
           }
-          
+
           echo "config-server=$(check_service config-server)" >> $GITHUB_OUTPUT
           echo "discovery-server=$(check_service discovery-server)" >> $GITHUB_OUTPUT
           echo "customers-service=$(check_service customers-service)" >> $GITHUB_OUTPUT
@@ -77,7 +77,7 @@ jobs:
           echo "visits-service=$(check_service visits-service)" >> $GITHUB_OUTPUT
           echo "api-gateway=$(check_service api-gateway)" >> $GITHUB_OUTPUT
           echo "admin-server=$(check_service admin-server)" >> $GITHUB_OUTPUT
-          
+
           # 하나라도 변경되었는지
           if [ "$BUILD_ALL" = "true" ] || echo "$CHANGED" | grep -q "spring-petclinic-"; then
             echo "any-service=true" >> $GITHUB_OUTPUT

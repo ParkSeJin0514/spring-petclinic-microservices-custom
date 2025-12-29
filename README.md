@@ -269,7 +269,8 @@ git push origin --delete v1.0.0
 |----------|----------|
 | `spring-petclinic-api-gateway/*` | api-gateway만 |
 | `spring-petclinic-customers-service/*` | customers-service만 |
-| `pom.xml` 또는 `.github/workflows/*` | 전체 서비스 (7개) |
+| `pom.xml` (루트) | 전체 서비스 (7개) |
+| `.github/workflows/*` | 변경된 서비스만 (CI만 트리거) |
 
 ### ⚙️ OIDC 인증 (키 없음)
 
